@@ -107,6 +107,12 @@ import android.view.animation.Interpolator;
 import android.view.animation.PathInterpolator;
 import android.window.RemoteTransition;
 import android.window.TransitionFilter;
+import android.graphics.RenderEffect;
+import android.graphics.Shader;
+import android.os.Build;
+import android.widget.FrameLayout;
+import android.view.View;
+import android.view.ViewGroup;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -168,10 +174,30 @@ import app.lawnchair.compat.LawnchairQuickstepCompat;
 import app.lawnchair.icons.shape.IconShapeManager;
 import app.lawnchair.theme.color.tokens.ColorTokens;
 
+class ExponentialEaseOutInterpolator implements Interpolator {
+    @Override
+    public float getInterpolation(float input) {
+        return (float) (1 - Math.pow(2, -10 * input));
+    }
+}
+
 /**
  * Manages the opening and closing app transitions from Launcher
  */
 public class QuickstepTransitionManager implements OnDeviceProfileChangeListener {
+
+
+    private View createWallpaperBlurOverlay() {
+        View blurOverlay = new View(mLauncher);
+        FrameLayout.LayoutParams layoutParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+        );
+        blurOverlay.setLayoutParams(layoutParams);
+        blurOverlay.setBackgroundColor(Color.TRANSPARENT); // Initial transparent background
+        return blurOverlay;
+    }
+
 
     private static final boolean ENABLE_SHELL_STARTING_SURFACE = SystemProperties
             .getBoolean("persist.debug.shell_starting_surface", true);
@@ -1061,50 +1087,82 @@ public class QuickstepTransitionManager implements OnDeviceProfileChangeListener
         }
         return animatorSet;
     }
-
     /**
      * Returns animator that controls depth/blur of the background.
      */
     private ObjectAnimator getBackgroundAnimator() {
-        // When launching an app from overview that doesn't map to a task, we still want
-        // to just
-        // blur the wallpaper instead of the launcher surface as well
         boolean allowBlurringLauncher = mLauncher.getStateManager().getState() != OVERVIEW
                 && BlurUtils.supportsBlursOnWindows();
 
         LaunchDepthController depthController = new LaunchDepthController(mLauncher);
         ObjectAnimator backgroundRadiusAnim = ObjectAnimator.ofFloat(depthController.stateDepth,
-                MULTI_PROPERTY_VALUE, BACKGROUND_APP.getDepth(mLauncher))
+                        MULTI_PROPERTY_VALUE, BACKGROUND_APP.getDepth(mLauncher))
                 .setDuration(APP_LAUNCH_DURATION);
-
         if (allowBlurringLauncher) {
-            // Create a temporary effect layer, that lives on top of launcher, so we can
-            // apply
-            // the blur to it. The EffectLayer will be fullscreen, which will help with
-            // caching
-            // optimizations on the SurfaceFlinger side:
-            // - Results would be able to be cached as a texture
-            // - There won't be texture allocation overhead, because EffectLayers don't have
-            // buffers
-            ViewRootImpl viewRootImpl = mLauncher.getDragLayer().getViewRootImpl();
-            SurfaceControl parent = viewRootImpl != null
-                    ? viewRootImpl.getSurfaceControl()
-                    : null;
-            SurfaceControl dimLayer = new SurfaceControl.Builder()
-                    .setName("Blur layer")
-                    .setParent(parent)
+            View rootView = mLauncher.getDragLayer();
+
+            // Create a composite SurfaceControl layer for everything behind the app animation
+            ViewRootImpl viewRootImpl = rootView.getViewRootImpl();
+            SurfaceControl parentSurface = viewRootImpl != null ? viewRootImpl.getSurfaceControl() : null;
+
+            if (parentSurface != null) {
+                SurfaceControl blurLayer = new SurfaceControl.Builder()
+                    .setName("Blur Layer")
+                    .setParent(parentSurface)
                     .setOpaque(false)
-                    .setHidden(false)
                     .setEffectLayer()
                     .build();
 
-            backgroundRadiusAnim.addListener(
-                    AnimatorListeners.forEndCallback(() -> new SurfaceControl.Transaction().remove(dimLayer).apply()));
+            SurfaceControl.Transaction transaction = new SurfaceControl.Transaction();
+
+            // Create an animator for the blur effect
+            backgroundRadiusAnim.addUpdateListener(animation -> {
+
+        if (mLauncher.getStateManager().getState() == LauncherState.ALL_APPS) {
+            return;
         }
 
-        backgroundRadiusAnim.addListener(
-                AnimatorListeners.forEndCallback(depthController::dispose));
 
+                float animatedValue = (float) animation.getAnimatedValue();
+                float blurRadius = Math.min(100f, animatedValue * 100f); // Scale blur with animation progress
+
+                // Dynamically update blur radius
+                if (blurLayer != null && blurLayer.isValid()) {
+                    transaction.setBackgroundBlurRadius(blurLayer, (int) blurRadius);
+                    transaction.setAlpha(blurLayer, 1f);
+                    transaction.show(blurLayer);
+                    transaction.apply();
+                }
+            });
+
+            backgroundRadiusAnim.setInterpolator(new ExponentialEaseOutInterpolator());
+
+            // Cleanup on animation end or cancel
+            backgroundRadiusAnim.addListener(new AnimatorListenerAdapter() {
+                @Override
+                public void onAnimationEnd(Animator animation) {
+                    cleanupBlurLayer(blurLayer, transaction);
+                }
+                @Override
+                public void onAnimationCancel(Animator animation) {
+                    cleanupBlurLayer(blurLayer, transaction);
+                }
+
+                private void cleanupBlurLayer(SurfaceControl blurLayer, SurfaceControl.Transaction transaction) {
+                    if (blurLayer != null && blurLayer.isValid()) {
+                        transaction.remove(blurLayer).apply();
+                        blurLayer.release(); // Release the SurfaceControl to avoid leaks
+                    }
+                }
+            });
+        }
+    }
+    backgroundRadiusAnim.addListener(
+            AnimatorListeners.forEndCallback(() -> {
+                depthController.stateDepth
+                        .setValue(mLauncher.getDepthController().stateDepth.getValue());
+                depthController.dispose();
+            }));
         return backgroundRadiusAnim;
     }
 
