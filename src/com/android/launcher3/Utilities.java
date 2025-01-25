@@ -157,6 +157,11 @@ public final class Utilities {
     @ChecksSdkIntAtLeast(api = VERSION_CODES.VANILLA_ICE_CREAM, codename = "V")
     public static final boolean ATLEAST_V = Build.VERSION.SDK_INT >= VERSION_CODES.VANILLA_ICE_CREAM;
 
+    public static boolean blurBackgroundAtAppLaunch(Context context) {
+        SharedPreferences prefs = LauncherPrefs.getPrefs(context.getApplicationContext());
+        return prefs.getBoolean(KEY_BLUR_BACKGROUND_AT_APP_LAUNCH, true);
+    }
+
     /**
      * Set on a motion event dispatched from the nav bar. See
      * {@link MotionEvent#setEdgeFlags(int)}.
@@ -183,7 +188,7 @@ public final class Utilities {
     @IntDef({ TRANSLATE_UP, TRANSLATE_DOWN, TRANSLATE_LEFT, TRANSLATE_RIGHT })
     public @interface AdjustmentDirection {
     }
-
+    public static final String KEY_BLUR_BACKGROUND_AT_APP_LAUNCH = "pref_blur_background_at_app_launch";
     /**
      * Returns true if theme is dark.
      */
@@ -942,7 +947,6 @@ public final class Utilities {
         return context.getApplicationContext().getSharedPreferences(
                 LauncherFiles.DEVICE_PREFERENCES_KEY, Context.MODE_PRIVATE);
     }
-
     /**
      * Translates the {@code targetView} so that it overlaps with
      * {@code exclusionBounds} as little
